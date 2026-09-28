@@ -16,11 +16,9 @@ class ConvModel(nn.Module):
         self.H = H
         self.W = W
 
-        # TO DO: Define static shapes here. 
-
-        # Precompute output size
-        # self.out_h = ...
-        # self.out_w = ...
+        # Define static shapes here. 
+        self.out_h = (H + 2 * padding - kernel_size) // stride + 1
+        self.out_w = (W + 2 * padding - kernel_size) // stride + 1
 
         self.weight = nn.Parameter(torch.randn(out_channels, in_channels, kernel_size, kernel_size))
         self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -39,31 +37,49 @@ class ConvModel(nn.Module):
         # Pad input
         x_pad = F.pad(x, (P, P, P, P))
 
-        # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
-        # Refer to Lecture 3 for implementing this operation.
+        # Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
         
-        # patches = ...
-        # return patches
+        patches = []
+        for kh in range(KH):
+            for kw in range(KW):
+                patch = x_pad[:, :, kh:kh + S * out_h:S, kw:kw + S * out_w:S]
+                patches.append(patch)
+        
+        patches = torch.stack(patches, dim=2)  # shape: (N, C, KH*KW, out_h, out_w)
+        patches = patches.reshape(N, C, KH, KW, out_h, out_w)
+        patches = patches.permute(0, 4, 5, 1, 2, 3)  # shape: (N, out_h, out_w, C, KH, KW)
+        patches = patches.reshape(N, out_h * out_w, C * KH * KW)
+        return patches
 
     def conv2d_manual(self, x):
         N = x.shape[0]
         C_out = self.out_channels
         KH = KW = self.kernel_size
 
-        # TO DO: 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
-        # cols = self.im2col_manual(x)          
+        # 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
+        cols = self.im2col_manual(x)          
 
-        # TO DO: 2) flatten self.weight into shape (C_out, C*KH*KW).
+        # 2) flatten self.weight into shape (C_out, C*KH*KW).
+        weights_flat = self.weight.reshape(C_out, self.in_channels * KH * KW)
 
-        # TO DO: 3) perform tiled matmul after required reshaping is done.
+        # 3) perform tiled matmul after required reshaping is done.
+        tile_size = 64
+        output_tiles = []
+        weights_t = weights_flat.T  # shape: (C*KH*KW, C_out)
+        L = cols.shape[1]  # out_h * out_w
+        for i in range(0, L, tile_size):
+            end = min(i + tile_size, L)
+            cols_tile = cols[:, i:end, :]  # shape: (N, tile_size, C*KH*KW)
+            out_tile = torch.matmul(cols_tile, weights_t)  # shape: (N, tile_size, C_out)
+            output_tiles.append(out_tile)
+        out = torch.cat(output_tiles, dim=1)  # shape: (N, out_h*out_w, C_out)
 
-        # TO DO: 4) Add bias.
+        # 4) Add bias.
+        out += self.bias.reshape(1, 1, C_out)
 
-        # TO DO: 5) reshape output into shape (N, C_out, out_h, out_w).
-
-
-
-        #return out
+        # 5) reshape output into shape (N, C_out, out_h, out_w).
+        out = out.permute(0, 2, 1).reshape(N, C_out, self.out_h, self.out_w)
+        return out
 
     def forward(self, x):
         return self.conv2d_manual(x)

@@ -21,11 +21,18 @@ def im2col_manual_jax(x, KH, KW, S, P, out_h, out_w):
     # Pad input
     x_pad = jnp.pad(x, ((0,0),(0,0),(P,P),(P,P)))
 
-    # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
-    # Refer to Lecture 3 for implementing this operation.
+    # Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
+    patches = []
+    for kh in range(KH):
+        for kw in range(KW):
+            patch = x_pad[:, :, kh:kh + S * out_h:S, kw:kw + S * out_w:S]
+            patches.append(patch)
     
-    # patches = ...
-    # return patches
+    patches = jnp.stack(patches, axis=2)  # shape: (N, C, KH*KW, out_h, out_w)
+    patches = jnp.reshape(patches, (N, C, KH, KW, out_h, out_w))
+    patches = jnp.transpose(patches, (0, 4, 5, 1, 2, 3))  # shape: (N, out_h, out_w, C, KH, KW)
+    patches = jnp.reshape(patches, (N, out_h * out_w, C * KH * KW))
+    return patches
 
 def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     '''
@@ -37,19 +44,33 @@ def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     C_out, _, KH, KW = weight.shape
 
     # define your helper variables here
-    # out_h = ...
-    # out_w = ...
+    out_h = (H + 2 * padding - KH) // stride + 1
+    out_w = (W + 2 * padding - KW) // stride + 1
     
-    # TO DO: 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
-    # cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
+    # 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
+    cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
 
-    # TO DO: 2) flatten self.weight into shape (C_out, C*KH*KW).
+    # 2) flatten self.weight into shape (C_out, C*KH*KW).
+    weights_flat = jnp.reshape(weight, (C_out, C * KH * KW))
 
-    # TO DO: 3) perform tiled matmul after required reshaping is done.
+    # 3) perform tiled matmul after required reshaping is done.
+    weights_t = jnp.transpose(weights_flat)  # shape: (C*KH*KW, C_out)
+    tile_size = 64
+    output_tiles = []
+    L = cols.shape[1]  # out_h * out_w
+    for start in range(0, L, tile_size):
+        end = min(start + tile_size, L)
+        cols_tile = cols[:, start:end, :]  # shape: (N, tile_size, C*KH*KW)
+        out_tile = jnp.matmul(cols_tile, weights_t)  # shape: (N, tile_size, C_out)
+        output_tiles.append(out_tile)
+    out = jnp.concatenate(output_tiles, axis=1)  # shape: (N, out_h*out_w, C_out)
 
-    # TO DO: 4) Add bias.
+    # 4) Add bias.
+    out += jnp.reshape(bias, (1, 1, C_out))
 
-    # TO DO: 5) reshape output into shape (N, C_out, out_h, out_w).
+    # 5) reshape output into shape (N, C_out, out_h, out_w).
+    out = jnp.reshape(out, (N, out_h, out_w, C_out))
+    out = jnp.transpose(out, (0, 3, 1, 2))  # shape: (N, C_out, out_h, out_w)
 
     #return out
 

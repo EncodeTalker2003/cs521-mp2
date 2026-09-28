@@ -1,0 +1,63 @@
+%% $Id: course.sty,v 1.4 2009/08/27 16:38:36 vadve Exp $
+%%--------------------------------------------------------------------------- 
+%% Definitions for course handouts
+%%--------------------------------------------------------------------------- 
+
+\catcode`@=11%
+
+%%--------------------------------------------------------------------------- 
+%% Title Page, Header, and Footer
+%%--------------------------------------------------------------------------- 
+
+\def\coursetitle{Machine Learning and Compilers}
+\def\coursenum{521}
+\def\coursesemester{Fall}
+\def\courseyear{2026}
+\def\handout{Course Information}
+
+\textheight 9in		% 1in margins at top and bottom
+\textwidth  6.9in	% For 0.8in margins at left and right
+\oddsidemargin -0.2in   % 0.8in margins at left and right
+\evensidemargin -0.2in
+
+\headheight 0in
+\topmargin -0.4in	% force page header to be less than 1in from top
+\headsep 0.4in		% distance between page header and top of page
+
+
+\long\def\hint#1{({\em Hint\/}: #1)}
+\def\@oddfoot{}
+\let\@evenfoot=\@oddfoot
+
+\let\@@olddocument=\document
+
+\def\document{%
+\@@olddocument
+\begin{center}
+%%
+%%\titlepage
+%%\vspace*{-.75in}
+%%{\large University of Illinois at Urbana-Champaign}\\
+%%{\large Department of Computer Science}\\ [0.5in]
+{\LARGE {\bf \handout}}\\ [0.1in]
+{\large CS \coursenum\ --- \coursetitle}\\
+{\large \coursesemester\ Semester \courseyear} \\[0.3in]
+\end{center}
+%%
+\let\problem\item
+\let\part\item
+\let\subpart\item
+\makeatletter
+%%
+\def\@oddhead{\rm\makebox[0in][l]{CS \coursenum---\coursesemester~ \courseyear}\hfil\thepage\hfil\makebox[0in][r]{\handout}}
+\let\@evenhead=\@oddhead
+\makeatother
+\def\@oddfoot{\sl
+\makebox[0in][l]{%
+\small University of Illinois at Urbana-Champaign}\hfil%
+\makebox[0in][r]{\small Department of Computer Science}}
+\let\@evenfoot=\@oddfoot
+}
+\catcode`@=12%
+
+%%--------------------------------------------------------------------------- 
