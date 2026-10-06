@@ -1,4 +1,4 @@
-# Part 3: Optimizing convolution 2D on Neural Network Accelerators (40 points) #
+# Part 3: Optimizing convolution 2D on Neural Network Accelerators #
 
 ## License & Copyright ##
 
@@ -16,18 +16,136 @@ Overall, this assignment will:
 
 ## Environment Setup ##
 
-You will be programming and testing your code on an AWS VM featuring Trainium accelerators. Please follow the instructions in [cloud_readme.md](../cloud_readme.md) for setting up a machine to run the assignment.
+You will work in two places. On your own machine, you develop your kernel and check that it is correct with the NKI simulator, as described in the next sections. On the course's Trainium cluster, AWS `trn2.3xlarge` instances that each have a Trainium2 accelerator, you run the performance tests and profile your kernel, as described in [Running on the Trainium cluster](#running-on-the-trainium-cluster).
 
-Once you have logged in to your AWS machine, you should download the assignment starter code from the course Github using:
+### Installing the simulator
 
-`git clone https://github.com/CS521-ml-compilers/mp2.git`
+The NKI simulator runs your kernel on an ordinary CPU and checks its output, so you can get a correct kernel working before you have Trainium access. It does not measure performance: the performance tests and `neuron-profile` need the Trainium instance.
 
-After downloading the MP 2 repository, move to the `npu` directory and **run the install script we have provided**:
+The simulator is part of the Neuron compiler package, `neuronx-cc`, which is only published for Linux on x86-64. The install script uses version 2.22, from Neuron SDK 2.27, which needs Python 3.10, 3.11, or 3.12. On Windows, use WSL2. On macOS, use the [Docker image](#macos-running-the-simulator-in-docker) described below, Google Colab, or a Linux machine.
+
+Download the starter code and **run the simulator install script we have provided** from the `npu` directory:
 ```
-cd npu
-source install.sh
+git clone https://github.com/CS521-ml-compilers/mp2.git
+cd mp2/npu
+bash install_simulator.sh
 ```
-The install script will activate a Python [virtual environment](https://builtin.com/data-science/python-virtual-environment) with all the needed assignment dependencies. It will also modify your `~/.bashrc` file so the virtual environment is activated upon future logins to your machine. Finally, the script sets up your InfluxDB credentials so that you may use `neuron-profile`.
+The script creates a Python [virtual environment](https://builtin.com/data-science/python-virtual-environment) in `~/nki-env` (set `NKI_ENV` to put it somewhere else), installs the Neuron compiler and a CPU build of PyTorch, which the test harness uses for its reference output, and then checks that the simulator runs. Activate the environment in every new shell:
+```
+source ~/nki-env/bin/activate
+```
+Activating it also sets `NEURON_PLATFORM_TARGET_OVERRIDE=trn2`, which makes the simulator apply the hardware rules of the Trainium2 chip in the course's instances.
+
+On Google Colab, run `!bash install_simulator.sh` from the `npu` directory instead. It installs into the notebook's Python, so there is nothing to activate, but run `%env NEURON_PLATFORM_TARGET_OVERRIDE=trn2` in the notebook to simulate the right chip. In a notebook, put a `!` in front of shell commands and use `%cd` to change directories.
+
+Do not run `install.sh`: the course's Trainium cluster is already set up, and you do not need it on your own machine.
+
+### macOS: running the simulator in Docker
+
+`neuronx-cc` has no macOS build, so on a Mac, run the simulator inside a Linux container. The `Dockerfile` in the `npu` directory builds an image with the simulator, PyTorch, and a copy of the starter code installed.
+
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and start it.
+2. Build the image once, from the `npu` directory of your clone of the starter code:
+   ```
+   cd mp2/npu
+   docker build --platform linux/amd64 -t mp2-nki-sim .
+   ```
+   This downloads the compiler and PyTorch, and produces an image of about 3.5 GB.
+3. Run the tests on your own copy of the code:
+   ```
+   docker run --rm -it --platform linux/amd64 -v "$PWD":/mp2/npu mp2-nki-sim python3 test_harness.py --simulate
+   ```
+
+The `-v "$PWD":/mp2/npu` option mounts your `npu` directory into the container in place of the image's copy of the starter code. The container then runs the `conv_npu.py` you are editing on your Mac, and anything it writes lands in your directory. To get a shell in the container instead, leave off the command at the end:
+```
+docker run --rm -it --platform linux/amd64 -v "$PWD":/mp2/npu mp2-nki-sim
+```
+The image already sets `NEURON_PLATFORM_TARGET_OVERRIDE=trn2`, so there is no environment to activate.
+
+The compiler is only built for x86-64 processors. On a Mac with an Apple Silicon (M-series) chip, Docker runs the image under x86-64 emulation, so the simulator runs slower than on an x86-64 machine.
+
+### Running your kernel in the simulator
+
+From the `npu` directory, run the test harness with the `--simulate` flag:
+```
+python3 test_harness.py --simulate
+```
+This runs the three correctness tests (small images, large images, and large images with bias) through the simulator. After them, the harness moves on to the performance tests, which need a real Trainium device, so in simulation mode it stops there with a Python traceback (a `KeyError`). That error is expected and does not mean your kernel is wrong; only the three correctness lines matter.
+
+If your kernel allocates on-chip tensors with block dimensions, the compiler prints `DeprecationWarning: Block dimension is deprecated` lines. A block dimension is a tensor dimension placed before the partition dimension, such as the 8 in a tensor of shape `(8, par_dim(128), 512)`; this README explains them in [Direct Allocation](#direct-allocation) and uses them in its examples. Block dimensions still work in compiler version 2.22, so you can ignore these warnings.
+
+**Which NKI API to use.** This assignment uses the NKI API in the `neuronxcc.nki` package, as the starter code does. AWS has since released a newer NKI API, imported with `import nki`, and the `latest` AWS documentation describes only that newer API. Do not mix the two. For documentation that matches this assignment, use the [Neuron SDK 2.26.1 NKI docs](https://awsdocs-neuron.readthedocs-hosted.com/en/v2.26.1/nki/api/index.html).
+
+### Running on the Trainium cluster
+
+The performance tests and `neuron-profile` need a real Trainium accelerator, so the course runs a small cluster of Trainium nodes that the whole class shares through the [Slurm](https://slurm.schedmd.com/quickstart.html) job scheduler. You log in to a login node, which has no Trainium accelerator, and submit each test run as a job. The job waits in a queue until a Trainium node is free, then runs there. The cluster uses the same compiler version as the simulator, `neuronx-cc` 2.22. Get your kernel correct in the simulator first, and use the cluster for the performance tests and profiling.
+
+#### Getting an account
+
+You log in to the cluster with an SSH key instead of a password. If you do not have one yet, create it on your own machine, in a terminal on Linux or macOS or in PowerShell on Windows:
+```
+ssh-keygen -t ed25519
+```
+Press Enter to accept the defaults. This creates two files in the `.ssh` folder of your home directory: `id_ed25519`, your private key, and `id_ed25519.pub`, your public key. Never share your private key. If you already have a key, such as `id_rsa.pub`, you can use it instead.
+
+Print your public key:
+```
+cat ~/.ssh/id_ed25519.pub
+```
+It is a single line that starts with `ssh-ed25519`. Submit it, with your NetID, through the [Trainium access form](https://docs.google.com/forms/d/e/1FAIpQLSeH-C6gpdMxFDf8RZvIkidAZBhPzflBO3SnJmt8fzc9y6jBjA/viewform). Your username on the cluster is your NetID. We will announce when accounts are ready.
+
+#### Logging in
+
+The login node accepts connections only from the campus network. When you are off campus, connect to the Illinois VPN first. Then log in with your NetID:
+```
+ssh <netid>@15.228.120.201
+```
+Your home directory on the cluster is private: other students cannot read your files. Keep your work there.
+
+#### Getting your code onto the cluster
+
+On the login node, clone the starter code:
+```
+git clone https://github.com/CS521-ml-compilers/mp2.git
+cd mp2/npu
+```
+Then either edit `conv_npu.py` on the login node with `vim` or `nano`, or copy it there from your own machine after each change. To copy it, run this from the `npu` directory on your own machine:
+```
+scp conv_npu.py <netid>@15.228.120.201:mp2/npu/
+```
+If you keep your work in your own Git repository, make the repository private.
+
+#### Running the tests on Trainium
+
+From `mp2/npu` on the login node, submit the test harness as a job:
+```
+sbatch run_trainium.sh
+```
+`sbatch` prints the job's ID. Check on your jobs with `squeue --me`: a job's state is `PD` while it waits for a Trainium node and `R` while it runs. When your job no longer appears in the list, read its output, which has the correctness and performance results:
+```
+cat mp2-<job id>.out
+```
+To cancel a job, run `scancel <job id>`.
+
+Keep these limits in mind:
+- You can run one job at a time. If you submit another, it waits in the queue until the first one finishes.
+- A job can run for at most 15 minutes. A complete test run takes about 3 minutes. A job that reaches the limit is stopped, and its output ends with a message that it was cancelled due to the time limit.
+- Each job gets a whole Trainium node, so other students' jobs do not affect your timings. The whole class shares the nodes, so expect to wait in the queue at busy times, especially close to the deadline.
+- The login node has no Trainium accelerator or Neuron software, so run your tests only through `sbatch`.
+
+#### Profiling your kernel
+
+To profile your kernel, pass `--profile` and a name to the test harness:
+```
+sbatch run_trainium.sh --profile conv
+```
+The job runs the same tests. The harness captures a profile of each performance test after measuring it, so profiling does not change your performance numbers. The end of `mp2-<job id>.out` then shows the MFU of the float32 and float16 tests, the numbers your write-up asks for.
+
+The job also writes `conv_float32.pftrace` and `conv_float16.pftrace` to your `npu` directory: timelines of what each engine did while your kernel ran. To view one, copy it to your own machine and open it at [ui.perfetto.dev](https://ui.perfetto.dev). To copy it, run this on your own machine:
+```
+scp <netid>@15.228.120.201:mp2/npu/conv_float32.pftrace .
+```
+The job also leaves the raw captures, `conv_float32.neff` and `conv_float32.ntff` and their float16 counterparts, in your `npu` directory. Reading them takes `neuron-profile`, which is installed only on the Trainium nodes; the job has already used it to compute the MFU and write the timelines.
 
 ## Part 0: Getting familiar with Trainium, Neuron Core Architecture, and Neuron Kernel Interface
 
@@ -35,13 +153,9 @@ The install script will activate a Python [virtual environment](https://builtin.
 
 First, let's get you acquainted with Trainium.
 
-The `Trn1.2xlarge` instance used in this assignment features a single Trainium device, which comprises of two NeuronCores, as shown in image below. Each core is equipped with its own dedicated HBM (High-bandwidth memory). Each NeuronCore can be considered a standalone processing unit, which contains its own on-chip storage as well as a collection of specialized compute engines for performing 128x128 matrix operations (tensor engine), 128-wide vector operations (vector engine), etc. While each Trainium device has two NeuronCores, in this assignment we will be writing kernels that execute on a single NeuronCore.
+The `trn2.3xlarge` instance used in this assignment features a single Trainium2 device, which comprises eight NeuronCores (NeuronCore-v3) and 96 GiB of HBM (high-bandwidth memory). Each NeuronCore can be considered a standalone processing unit, which contains its own on-chip storage as well as a collection of specialized compute engines for performing 128x128 matrix operations (tensor engine), 128-wide vector operations (vector engine), etc. While each Trainium2 device has eight NeuronCores, in this assignment we will be writing kernels that execute on a single NeuronCore.
 
-<p align="center">
-  <img src="../handout/trainium_chip.png" width=40% height=40%>
-</p>
-
-More details on the four distinct compute engines that exist in a NeuronCore can be found [here](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/arch/neuron-hardware/neuron-core-v2.html#neuroncores-v2-arch).
+More details on the four distinct compute engines that exist in a NeuronCore can be found [here](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/neuron-core-v3.html), and on the Trainium2 device [here](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trainium2.html).
 
 ### Trainium Memory Hierarchy
 
@@ -52,8 +166,8 @@ On Trainium, the memory hierarchy consists of four levels: **host memory (DRAM)*
 </p>
 
 * __Host memory__, is the memory address space of the host machine, and is external to the Trainium device. You can think of host memory on Trainium as similar to host memory in a CUDA programming environment.
-* __HBM__ is high-bandwidth memory located on the Trainium device. Moving data from host memory to HBM requires data transfer over the machine's PCIe interconnect. HBM serves as the device's primary memory, offering large storage (32 GiB). 
-* __SBUF__ is on-chip storage on the NeuronCore. In comparison, SBUF is significantly smaller than HBM (24 MiB) but offers much higher bandwidth (~20x than HBM). 
+* __HBM__ is high-bandwidth memory located on the Trainium device. Moving data from host memory to HBM requires data transfer over the machine's PCIe interconnect. HBM serves as the device's primary memory, offering large storage (96 GiB on Trainium2). 
+* __SBUF__ is on-chip storage on the NeuronCore. In comparison, SBUF is significantly smaller than HBM (28 MiB per NeuronCore on Trainium2) but offers much higher bandwidth (~20x than HBM). 
 * __PSUM__ is a small, specialized memory (2 MiB) dedicated to holding matrix multiplication results produced by the tensor engine.
 
 In Trainium, all computations require loading data from HBM into SBUF, which is accessible by all engine types. Intermediate data generated during kernel execution by the compute engines is also stored in SBUF. Once the computation is complete, the results are written back to HBM. 
@@ -319,11 +433,7 @@ def vector_add_direct_allocation(a_vec, b_vec):
 
 To get a detailed analysis of the performance of an application running on a NeuronCore, you will need to use the profiling tool for NeuronDevices: `neuron-profile`. Feel free to learn more about `neuron-profile` functionality from the [user guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/tools/neuron-sys-tools/neuron-profile-user-guide.html) and interesting performance metrics for NKI kernels from the [NKI performance guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/nki/nki_perf_guide.html).
 
-In order to run the profiling tool, you must make sure that you ran the install script as detailed in [Environment Setup](https://github.com/stanford-cs149/asst4-trainium/tree/main?tab=readme-ov-file#environment-setup) and that you forwarded ports 3001 and 8086 when you ssh'd into your machine. To reiterate on the latter, the command you should have ran is:
-
- `ssh -i path/to/key_name.pem ubuntu@<public_dns_name> -L 3001:localhost:3001 -L 8086:localhost:8086`
- 
-More details about why this is needed can be found in the [cloud_readme.md](https://github.com/stanford-cs149/asst4-trainium/blob/main/cloud_readme.md). 
+`neuron-profile` only runs on Trainium, not in the simulator. [Profiling your kernel](#profiling-your-kernel) explains how to profile your kernel on the course's cluster and view the results.
 
 ## Part 1: Implementing a Convolution Layer
 
@@ -337,7 +447,7 @@ Before you begin, we will demonstrate how to perform matrix operations on a Neur
   <img src="../handout/tensor_engine.png" width=60% height=60%>
 </p>
 
-The above image depicts the architecture of the Tensor Engine. The Tensor Engine is built around a 128x128 [systolic processing array](https://gfxcourses.stanford.edu/cs149/fall24/lecture/hwprog/slide_10) which streams matrix data input from SBUF (on-chip storage) and writes the output to PSUM (also on-chip storage). Like SBUF, PSUM is fast on-chip memory, however it is much smaller than SBUF (2MiB vs 24 MiB) and serves a dedicated purpose of storing matrix multiplication results computed by the Tensor Engine. The Tensor Engine is able to read-add-write to every address in PSUM. Therefore, PSUM is useful when executing large matrix multiplications in a tiled manner, where the results of each matrix multiply are accumulated into the same output tile. 
+The above image depicts the architecture of the Tensor Engine. The Tensor Engine is built around a 128x128 [systolic processing array](https://gfxcourses.stanford.edu/cs149/fall24/lecture/hwprog/slide_10) which streams matrix data input from SBUF (on-chip storage) and writes the output to PSUM (also on-chip storage). Like SBUF, PSUM is fast on-chip memory, however it is much smaller than SBUF (2 MiB vs 28 MiB) and serves a dedicated purpose of storing matrix multiplication results computed by the Tensor Engine. The Tensor Engine is able to read-add-write to every address in PSUM. Therefore, PSUM is useful when executing large matrix multiplications in a tiled manner, where the results of each matrix multiply are accumulated into the same output tile. 
 
 Recall that the Vector Engine has the capability to operate on SBUF tiles of size (128, 64k). However, the Tensor Engine contains unique SBUF tile size constraints which differ to that of the Vector Engine. Suppose we want the Tensor Engine to perform the matrix multiplication C = A x B, where A and B are located in SBUF, and the result C is stored in PSUM. Trainium imposes the following constraints. 
   - Matrix A - the left-hand side tile - can be no bigger than (128, 128)
@@ -508,16 +618,16 @@ For this part of the assignment, focus exclusively on the file `conv_npu.py`. We
 
 Prioritize Correctness First. Before optimizing for performance, ensure your implementation is correct. While you may choose to implement things differently, we recommend starting by creating a kernel that works for small image sizes. Then, once your kernel works for small images, extend its functionality to handle images that are too large to fit entirely in the SBUF buffer. Following that, incorporate bias addition. Proceed to optimize performance once you achieve correctness.
 
-Use the test harness script provided to validate your implementation. To run the tests, execute:
+Use the test harness script provided to validate your implementation. To run the tests on Trainium, submit them as a job from the `npu` directory on the course's cluster, as [Running the tests on Trainium](#running-the-tests-on-trainium) describes:
 ```
-python3 test_harness.py
+sbatch run_trainium.sh
 ```
 
-To debug your implementations, run the test harness with the `--simulate` flag. This wraps your implementation with a call to `nki.simulate_kernel()`: you can read more about it [here](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/nki/api/generated/nki.simulate_kernel.html#nki.simulate_kernel). When running in simulation mode, you can insert calls to `nki.device_print()` to print intermediate values of the device tensors. This can help identify potential bugs.
+To debug your implementations, run the test harness with the `--simulate` flag. This wraps your implementation with a call to `nki.simulate_kernel()`: you can read more about it [here](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/nki/api/generated/nki.simulate_kernel.html#nki.simulate_kernel). When running in simulation mode, you can insert calls to `nl.device_print()` to print intermediate values of the device tensors. This can help identify potential bugs.
 
 The test harness will run correctness tests first, and run performance checks next. A full-credit solution must achieve performance within 150% of the reference kernel while maintaining correctness. It will invoke your kernel with input tensors having data types float32 and float16: with the performance requirements for float16 being more strict. Make sure you write your kernels keeping this in mind!
 
-Students also need to submit a write up briefly describing their implementations. Also describe how you went about optimizing your implementation. Make sure to profile your implementation, and report the achieved MFU, with both `bfloat16` and `float32` data types. You can do so by running `neuron-profile view`. Run the test harness with the `--profile <profile_name>` flag to capture a trace.
+Students also need to submit a write up briefly describing their implementations. Also describe how you went about optimizing your implementation. Make sure to profile your implementation, and report the achieved MFU, with both `bfloat16` and `float32` data types. [Profiling your kernel](#profiling-your-kernel) explains how to profile your kernel with the test harness's `--profile <profile_name>` flag and where to find its MFU.
 
 ## Grading Guidelines
 
