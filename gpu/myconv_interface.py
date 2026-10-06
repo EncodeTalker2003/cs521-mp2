@@ -1,9 +1,10 @@
 import torch
+from pathlib import Path
 from torch.utils.cpp_extension import load
 
 # Compile and load CUDA extension
 conv_module = load(name="myconv",
-                     sources=["myconv_kernel.cu"],
+                     sources=[str(Path(__file__).with_name("myconv_kernel.cu"))],
                      verbose=True)
 
 # Input parameters

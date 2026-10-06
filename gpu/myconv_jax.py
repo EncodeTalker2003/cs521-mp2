@@ -72,7 +72,7 @@ def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     out = jnp.reshape(out, (N, out_h, out_w, C_out))
     out = jnp.transpose(out, (0, 3, 1, 2))  # shape: (N, C_out, out_h, out_w)
 
-    #return out
+    return out
 
 if __name__ == "__main__":
     # Instantiate PyTorch model
@@ -95,7 +95,7 @@ if __name__ == "__main__":
     bias_jax = jnp.array(params["bias"])
 
     # enable JIT compilation
-    conv2d_manual_jax_jit = jit(conv2d_manual_jax)
+    conv2d_manual_jax_jit = jit(conv2d_manual_jax, static_argnames=("stride", "padding"))
 
     # call your JAX function
     out_jax = conv2d_manual_jax_jit(x_jax, weight_jax, bias_jax)
